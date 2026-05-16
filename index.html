@@ -91,6 +91,35 @@ body{
 .pin{color:var(--acc);margin-right:4px;animation:bounce .8s ease-in-out infinite alternate}
 @keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-3px)}}
 
+/* ── GPS + Search ─────────────────────────────────────── */
+.location-row{display:flex;align-items:center;gap:6px;justify-content:center;margin-bottom:8px}
+.location-row .pin{flex-shrink:0}
+#cityName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.gps-btn{
+  flex-shrink:0;background:transparent;
+  border:2px solid var(--light);color:var(--light);
+  font-family:'Press Start 2P',monospace;font-size:7px;
+  padding:4px 7px;cursor:pointer;min-height:28px;line-height:1;
+  transition:background .15s;
+}
+.gps-btn:hover{background:rgba(126,184,247,.2)}
+.gps-btn:disabled{opacity:.5;cursor:not-allowed}
+.search-row{display:flex;gap:6px;margin-bottom:4px}
+.search-input{
+  flex:1;background:rgba(255,255,255,.07);
+  border:2px solid var(--light);color:var(--txt);
+  font-family:'Press Start 2P',monospace;font-size:7px;
+  padding:7px 10px;outline:none;min-height:34px;
+}
+.search-input::placeholder{color:rgba(184,217,255,.4);font-size:6px}
+.search-input:focus{border-color:#7eb8f7;background:rgba(255,255,255,.12)}
+.search-go{
+  background:var(--acc);border:2px solid var(--light);
+  color:#fff;font-family:'Press Start 2P',monospace;
+  font-size:7px;padding:7px 10px;cursor:pointer;min-height:34px;
+}
+.search-go:hover{background:#3d7bf4}
+
 /* ── Weather Icon ─────────────────────────────────────── */
 .icon-wrap{
   display:flex;justify-content:center;align-items:center;
@@ -276,31 +305,6 @@ body{
   text-align:left;
 }
 
-/* Hourly horizontal scroller */
-.hourly-scroll{
-  display:flex;gap:6px;overflow-x:auto;
-  padding:4px 2px 8px;
-  scrollbar-width:thin;
-  scrollbar-color:var(--acc) transparent;
-}
-.hourly-scroll::-webkit-scrollbar{height:6px}
-.hourly-scroll::-webkit-scrollbar-thumb{background:var(--acc)}
-.hour-item{
-  flex:0 0 auto;
-  min-width:54px;
-  background:rgba(45,106,228,.15);
-  border:2px solid rgba(126,184,247,.2);
-  padding:8px 4px;
-  display:flex;flex-direction:column;align-items:center;gap:6px;
-}
-.hour-item.now{
-  background:rgba(45,106,228,.4);
-  border-color:var(--light);
-}
-.hour-time{font-size:6px;color:var(--pale);letter-spacing:.5px}
-.hour-emoji{font-size:16px;line-height:1}
-.hour-temp{font-size:8px;color:var(--txt)}
-
 /* Daily list */
 .daily-list{display:flex;flex-direction:column;gap:4px}
 .day-row{
@@ -362,7 +366,16 @@ body{
   </div>
   <div id="weatherContent" style="display:none">
     <div class="location">
-      <span class="pin">📍</span><span id="cityName">—</span>
+      <div class="location-row">
+        <span class="pin">📍</span>
+        <span id="cityName">—</span>
+        <button class="gps-btn" id="gpsBtn" onclick="useGPS()" title="Use exact GPS">🎯 GPS</button>
+      </div>
+      <div class="search-row">
+        <input class="search-input" id="searchInput" type="text" placeholder="SEARCH CITY..."
+          onkeydown="if(event.key==='Enter')searchCity()">
+        <button class="search-go" onclick="searchCity()">GO</button>
+      </div>
     </div>
     <div class="icon-wrap" id="iconWrap"></div>
     <div class="temp" id="temp">—°</div>
@@ -388,12 +401,6 @@ body{
         <span class="stat-val" id="uvIndex">—</span>
         <span class="stat-lbl">UV INDEX</span>
       </div>
-    </div>
-
-    <!-- Hourly forecast (today) -->
-    <div class="forecast-section">
-      <div class="section-title">▸ TODAY • HOURLY</div>
-      <div class="hourly-scroll" id="hourlyScroll"></div>
     </div>
 
 
@@ -560,50 +567,94 @@ async function getLocationByIP() {
   throw lastErr || new Error('Could not detect location');
 }
 
+// ── GPS exact location ────────────────────────────────────
+async function useGPS() {
+  if (!navigator.geolocation) { showError('GPS NOT SUPPORTED ON THIS DEVICE.'); return; }
+  const btn = document.getElementById('gpsBtn');
+  btn.textContent = '⏳...'; btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      btn.textContent = '🎯 GPS'; btn.disabled = false;
+      const { latitude: lat, longitude: lon } = pos.coords;
+      showLoading(true);
+      try {
+        const r = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`);
+        const d = await r.json();
+        const city = d.address.city || d.address.town || d.address.village || d.address.county || 'My Location';
+        const country = (d.address.country_code || '').toUpperCase();
+        await fetchAndRender(lat, lon, `${city}, ${country}`);
+      } catch { await fetchAndRender(pos.coords.latitude, pos.coords.longitude, 'My Location'); }
+    },
+    () => { btn.textContent = '🎯 GPS'; btn.disabled = false; showError('GPS DENIED. ALLOW LOCATION IN BROWSER SETTINGS.'); },
+    { timeout: 10000, enableHighAccuracy: true }
+  );
+}
+
+// ── City search ───────────────────────────────────────────
+async function searchCity() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  showLoading(true);
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`);
+    const results = await r.json();
+    if (!results.length) { showLoading(false); showError(`CITY NOT FOUND: "${q.toUpperCase()}"`); return; }
+    const { lat, lon, display_name } = results[0];
+    const parts = display_name.split(',');
+    const city = parts[0].trim();
+    const country = parts[parts.length - 1].trim();
+    document.getElementById('searchInput').value = '';
+    await fetchAndRender(parseFloat(lat), parseFloat(lon), `${city}, ${country}`);
+  } catch { showLoading(false); showError('SEARCH FAILED. CHECK CONNECTION.'); }
+}
+
+// ── Shared fetch + render ─────────────────────────────────
+async function fetchAndRender(lat, lon, cityName) {
+  showLoading(true);
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,relative_humidity_2m,apparent_temperature,` +
+      `weather_code,wind_speed_10m,is_day,uv_index` +
+      `&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const cur = data.current;
+    if (!cur) throw new Error('Bad response');
+    const now       = new Date();
+    const tempC     = Math.round(cur.temperature_2m);
+    const feelsLike = Math.round(cur.apparent_temperature);
+    const humidity  = cur.relative_humidity_2m ?? '--';
+    const uv        = cur.uv_index != null ? cur.uv_index.toFixed(1) : '--';
+    const windspeed = cur.wind_speed_10m != null ? cur.wind_speed_10m.toFixed(1) : '--';
+    const isNight   = cur.is_day === 0;
+    const wmoInfo   = WMO[cur.weather_code] || { label: 'Unknown', type: 'cloudy' };
+    document.getElementById('cityName').textContent  = cityName;
+    document.getElementById('temp').textContent      = `${tempC}°C`;
+    document.getElementById('condition').textContent = wmoInfo.label.toUpperCase();
+    document.getElementById('humidity').textContent  = `${humidity}%`;
+    document.getElementById('wind').textContent      = `${windspeed} km/h`;
+    document.getElementById('feelsLike').textContent = `${feelsLike}°C`;
+    document.getElementById('uvIndex').textContent   = uv;
+    document.getElementById('updated').textContent   = `UPDATED ${now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
+    setScene(wmoInfo.type, isNight);
+    buildIcon(wmoInfo.type, isNight);
+    showLoading(false);
+  } catch(e) {
+    console.error(e);
+    showError('COULD NOT LOAD WEATHER DATA. CHECK CONNECTION.');
+  }
+}
+
 async function loadWeather() {
   showLoading(true);
   try {
     const loc = await getLocationByIP();
-    const { lat, lon } = loc;
-    const cityName = `${loc.city}, ${loc.country}`;
-
-    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&hourly=relativehumidity_2m,apparent_temperature,uv_index,temperature_2m,weathercode,is_day&timezone=auto&forecast_days=2`);
-
-    const data = await weatherRes.json();
-    const cw = data.current_weather;
-    const hourly = data.hourly;
-
-    // Find current hour index
-    const now = new Date();
-    const currentHourStr = now.toISOString().slice(0,13);
-    const hIdx = Math.max(0, hourly.time.findIndex(t => t.startsWith(currentHourStr)));
-
-    const humidity = hourly.relativehumidity_2m[hIdx] ?? '--';
-    const feelsLike = hourly.apparent_temperature[hIdx]?.toFixed(0) ?? '--';
-    const uv = hourly.uv_index?.[hIdx]?.toFixed(1) ?? '--';
-
-    const wmoInfo = WMO[cw.weathercode] || {label:'Unknown', type:'cloudy'};
-    const isNight = cw.is_day === 0;
-    const tempC = cw.temperature.toFixed(0);
-
-    // Update DOM
-    document.getElementById('cityName').textContent = cityName;
-    document.getElementById('temp').textContent = `${tempC}°C`;
-    document.getElementById('condition').textContent = wmoInfo.label.toUpperCase();
-    document.getElementById('humidity').textContent = `${humidity}%`;
-    document.getElementById('wind').textContent = `${cw.windspeed} km/h`;
-    document.getElementById('feelsLike').textContent = `${feelsLike}°C`;
-    document.getElementById('uvIndex').textContent = uv;
-    document.getElementById('updated').textContent = `UPDATED ${now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
-
-    setScene(wmoInfo.type, isNight);
-    buildIcon(wmoInfo.type, isNight);
-    renderHourly(hourly, hIdx);
-    showLoading(false);
-
+    await fetchAndRender(loc.lat, loc.lon, `${loc.city}, ${loc.country}`);
   } catch(e) {
     console.error(e);
-    showError('COULD NOT LOAD\nWEATHER DATA.\nCHECK CONNECTION.');
+    showError('COULD NOT LOAD WEATHER DATA. CHECK CONNECTION.');
   }
 }
 
@@ -619,27 +670,7 @@ function emojiFor(code, isDay=1){
   return TYPE_EMOJI[t] || '☁️';
 }
 
-function renderHourly(hourly, startIdx){
-  const wrap = document.getElementById('hourlyScroll');
-  wrap.innerHTML = '';
-  const end = Math.min(hourly.time.length, startIdx + 24);
-  for (let i = startIdx; i < end; i++) {
-    const dt = new Date(hourly.time[i]);
-    const hr = dt.getHours();
-    const label = i === startIdx ? 'NOW' :
-      (hr === 0 ? '12A' : hr < 12 ? hr+'A' : hr === 12 ? '12P' : (hr-12)+'P');
-    const t = Math.round(hourly.temperature_2m[i]);
-    const code = hourly.weathercode[i];
-    const isDay = hourly.is_day ? hourly.is_day[i] : 1;
-    const div = document.createElement('div');
-    div.className = 'hour-item' + (i === startIdx ? ' now' : '');
-    div.innerHTML = `
-      <span class="hour-time">${label}</span>
-      <span class="hour-emoji">${emojiFor(code, isDay)}</span>
-      <span class="hour-temp">${t}°</span>`;
-    wrap.appendChild(div);
-  }
-}
+
 
 
 // Init
